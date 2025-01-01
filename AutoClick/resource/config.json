@@ -1,0 +1,146 @@
+{
+	"ProcessList": [
+		{
+			"ProcessName": "ZenlessZoneZero",
+			"ResourcePath": "zzz",
+			"Tasks": [
+				{
+					"IconGroups": [
+						[
+							"menu.png"
+						],
+						[
+							"skip.png"
+						],
+						[
+							"confirm.png"
+						]
+					],
+					"TargetIndex": 0,
+					"Actions": [
+						{
+							"Type": "move",
+							"Offset": {
+								"X": 10,
+								"Y": 10
+							}
+						},
+						{
+							"Type": "delay",
+							"Delay": 50
+						},
+						{
+							"Type": "click",
+							"Offset": {
+								"X": 10,
+								"Y": 10
+							}
+						},
+						{
+							"Type": "delay",
+							"Delay": 200
+						}
+					],
+					"Delay": 1000
+				},
+				{
+					"IconGroups": [
+						[
+							"confirm.png"
+						]
+					],
+					"TargetIndex": 0,
+					"Actions": [
+						{
+							"Type": "move",
+							"Offset": {
+								"X": 10,
+								"Y": 10
+							}
+						},
+						{
+							"Type": "delay",
+							"Delay": 50
+						},
+						{
+							"Type": "click",
+							"Offset": {
+								"X": 10,
+								"Y": 10
+							}
+						}
+					],
+					"Delay": 200
+				},
+				{
+					"IconGroups": [
+						[
+							"next1.png"
+						],
+						[
+							"next2.png"
+						],
+						[
+							"next3.png"
+						],
+						[
+							"next4.png"
+						]
+					],
+					"TargetIndex": 0,
+					"Actions": [
+						{
+							"Type": "move",
+							"Offset": {
+								"X": 10,
+								"Y": 10
+							}
+						},
+						{
+							"Type": "delay",
+							"Delay": 50
+						},
+						{
+							"Type": "click",
+							"Offset": {
+								"X": 10,
+								"Y": 10
+							}
+						}
+					],
+					"Delay": 50
+				},
+				{
+					"IconGroups": [
+						[
+							"1.png",
+							"1.1.png"
+						]
+					],
+					"TargetIndex": 1,
+					"Actions": [
+						{
+							"Type": "move",
+							"Offset": {
+								"X": 10,
+								"Y": 10
+							}
+						},
+						{
+							"Type": "delay",
+							"Delay": 50
+						},
+						{
+							"Type": "click",
+							"Offset": {
+								"X": 10,
+								"Y": 10
+							}
+						}
+					],
+					"Delay": 50
+				}
+			]
+		}
+	]
+}
