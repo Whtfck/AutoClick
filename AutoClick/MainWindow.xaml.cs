@@ -41,6 +41,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        ConfigTextBox.Text = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory + "./resource/config.json");
     }
 
     public bool IsRunning
@@ -127,6 +129,12 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(filepath))
         {
             MessageBox.Show("Please select a valid JSON file");
+            return null;
+        }
+
+        if (!File.Exists(filepath))
+        {
+            MessageBox.Show("File does not exist");
             return null;
         }
 
@@ -229,15 +237,27 @@ public partial class MainWindow : Window
                 {
                     foreach (var t in tasks)
                     {
+                        if (!IsRunning)
+                        {
+                            Console.WriteLine("stopping task");
+                            break;
+                        }
+
                         JObject task = ToJObject(t);
                         JArray iconGroups = ToJArray(task["IconGroups"]);
-                        
+
                         int targetIndex = ToInt(task["TargetIndex"]);
                         JArray actions = ToJArray(task["Actions"]);
 
                         // 不同组集合
                         foreach (var igs in iconGroups)
                         {
+                            if (!IsRunning)
+                            {
+                                Console.WriteLine("stopping task");
+                                break;
+                            }
+
                             Bitmap bitmap = CaptureUtil.CaptureWindow(handle);
                             CaptureUtil.GetWindowRect(handle, out RECT rect);
                             Mat src = CaptureUtil.BitmapToEmguMat(bitmap);
@@ -249,6 +269,12 @@ public partial class MainWindow : Window
                             Dictionary<int, MatchResult> results = new Dictionary<int, MatchResult>();
                             for (int i = 0; i < iconGroup.Count; i++)
                             {
+                                if (!IsRunning)
+                                {
+                                    Console.WriteLine("stopping task");
+                                    break;
+                                }
+
                                 string icon = $"{curDir}/{resDir}/{ObjToString(iconGroup[i])}";
 
                                 var matchResult = matMap.TryGetValue(icon, out var iconMat)
@@ -260,7 +286,7 @@ public partial class MainWindow : Window
                                 results.Add(i, matchResult);
                                 if (IsMatched(matchResult))
                                 {
-                                    Console.WriteLine($"Matched: {icon}");
+                                    Console.WriteLine($"Matched: {icon}, maxVal: {matchResult.MaxVal}");
                                     if (i == iconGroup.Count - 1)
                                     {
                                         allMatched = true;
@@ -274,10 +300,13 @@ public partial class MainWindow : Window
 
                             if (allMatched)
                             {
-                                
                                 MatchResult targetResult = results[targetIndex];
-                                
+
                                 ActionUtil.DoActions(rect, actions, targetResult);
+                            }
+                            else
+                            {
+                                Console.WriteLine($"{iconGroup} not match at: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
                             }
                         }
 
@@ -290,7 +319,6 @@ public partial class MainWindow : Window
             {
                 IsRunning = false;
                 Console.Error.WriteLine(e);
-                MessageBox.Show(e.Message, "Error");
             }
         });
 

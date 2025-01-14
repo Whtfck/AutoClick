@@ -10,6 +10,7 @@ public class ClickAction(MatchResult matchResult, JObject action) : IAction
 
     public void DoAction()
     {
+        Console.WriteLine($"Click action at: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
         MouseUtil.Click();
     }
 }

@@ -20,6 +20,7 @@ public class MoveAction(MatchResult matchResult, JObject action) : IAction
         absPoint.X += SafeConvertUtil.ToInt(offset["X"]);
         absPoint.Y += SafeConvertUtil.ToInt(offset["Y"]);
         
+        Console.WriteLine($"Move action: {absPoint} at: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
         MouseUtil.Move(absPoint);
     }
 }
