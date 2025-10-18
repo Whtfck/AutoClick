@@ -1,8 +1,10 @@
+using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using AutoClick.utils;
 using Emgu.CV;
 using Emgu.CV.CvEnum;
 using Emgu.CV.Structure;
@@ -29,36 +31,44 @@ public struct MatchResult
 
 public class CaptureUtil
 {
+    private const uint SRCCOPY = 0x00CC0020;
+    private const uint CAPTUREBLT = 0x40000000;
+    private const uint PW_RENDERFULLCONTENT = 0x00000002;
+
+    private static volatile bool _notifiedWindowCaptureFailure;
+    private static volatile bool _notifiedPrintWindowFailure;
+    private static volatile bool _notifiedDesktopCaptureFailure;
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
-    // P/Invoke: SetForegroundWindow
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
 
-    // P/Invoke: ShowWindow
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
-    // P/Invoke: BitBlt
     [DllImport("gdi32.dll")]
     public static extern bool BitBlt(IntPtr hObject, int nXDest, int nYDest, int nWidth, int nHeight,
         IntPtr hObjSource, int nXSrc, int nYSrc, uint dwRop);
 
-    // P/Invoke: GetDC
     [DllImport("user32.dll")]
     public static extern IntPtr GetDC(IntPtr hWnd);
 
-    // P/Invoke: ReleaseDC
     [DllImport("user32.dll")]
     public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
 
-    // 定义常量
-    public const int SW_RESTORE = 9; // 恢复窗口（如果最小化）
-    public const int SW_SHOW = 5; // 显示窗口
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindowDC(IntPtr hWnd);
 
-    // 获取窗口句柄
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+
+    public const int SW_RESTORE = 9;
+    public const int SW_SHOW = 5;
+
     public static IntPtr GetWindowHandle(string processName)
     {
         Process[] processes = Process.GetProcessesByName(processName);
@@ -67,10 +77,15 @@ public class CaptureUtil
             throw new Exception($"没有找到名为 {processName} 的进程");
         }
 
-        return processes[0].MainWindowHandle;
+        var handle = processes[0].MainWindowHandle;
+        if (handle == IntPtr.Zero)
+        {
+            throw new Exception($"进程 {processName} 的主窗口句柄为空");
+        }
+
+        return handle;
     }
 
-    // 捕获指定窗口的画面
     public static Bitmap CaptureWindow(IntPtr hWnd)
     {
         if (hWnd == IntPtr.Zero)
@@ -78,100 +93,172 @@ public class CaptureUtil
             throw new ArgumentException("无效的窗口句柄", nameof(hWnd));
         }
 
-        // 获取窗口的位置和大小
+        using var scope = PerformanceScope.Track("CaptureWindow", 30);
+
         if (!GetWindowRect(hWnd, out RECT rect))
         {
-            throw new Exception("无法获取窗口矩形");
+            throw new InvalidOperationException("无法获取窗口矩形");
         }
 
-        // 创建一个 Bitmap 来保存截图
-        var width = rect.Right - rect.Left;
-        var height = rect.Bottom - rect.Top;
-        Bitmap bitmap = new Bitmap(width, height);
+        int width = rect.Right - rect.Left;
+        int height = rect.Bottom - rect.Top;
+        if (width <= 0 || height <= 0)
+        {
+            throw new InvalidOperationException($"窗口尺寸异常: {width}x{height}");
+        }
+
+        Bitmap bitmap = new(width, height, PixelFormat.Format32bppArgb);
+        bool success = false;
+
         using (Graphics g = Graphics.FromImage(bitmap))
         {
-            IntPtr hdc = g.GetHdc();
+            IntPtr destHdc = g.GetHdc();
             try
             {
-                // 获取桌面设备上下文
-                IntPtr desktopHdc = GetDC(IntPtr.Zero);
+                success = TryBitBltFromWindow(hWnd, destHdc, width, height);
 
-                // 使用 BitBlt 复制图像
-                if (!BitBlt(hdc, 0, 0, width, height, desktopHdc, rect.Left, rect.Top, 0x00CC0020 /* SRCCOPY */))
+                if (!success)
                 {
-                    Console.Error.WriteLine("spnapshot failed!");
+                    if (!_notifiedWindowCaptureFailure)
+                    {
+                        _notifiedWindowCaptureFailure = true;
+                        LogUtil.Warning($"BitBlt window capture失败，尝试PrintWindow重试。handle: {hWnd}");
+                    }
+
+                    success = TryPrintWindow(hWnd, destHdc);
                 }
 
-                // 释放桌面设备上下文
-                ReleaseDC(IntPtr.Zero, desktopHdc);
+                if (!success)
+                {
+                    if (!_notifiedPrintWindowFailure)
+                    {
+                        _notifiedPrintWindowFailure = true;
+                        LogUtil.Warning($"PrintWindow捕获失败，尝试桌面复制。handle: {hWnd}");
+                    }
+
+                    success = TryBitBltFromDesktop(rect, destHdc, width, height);
+                }
             }
             finally
             {
-                g.ReleaseHdc(hdc);
+                g.ReleaseHdc(destHdc);
             }
+        }
+
+        if (!success)
+        {
+            if (!_notifiedDesktopCaptureFailure)
+            {
+                _notifiedDesktopCaptureFailure = true;
+                LogUtil.Warning($"桌面复制捕获失败 handle: {hWnd}");
+            }
+
+            LogUtil.Error($"窗口捕获失败 handle: {hWnd}");
         }
 
         return bitmap;
     }
 
+    private static bool TryBitBltFromWindow(IntPtr hWnd, IntPtr destHdc, int width, int height)
+    {
+        IntPtr windowHdc = GetWindowDC(hWnd);
+        if (windowHdc == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            return BitBlt(destHdc, 0, 0, width, height, windowHdc, 0, 0, SRCCOPY | CAPTUREBLT);
+        }
+        finally
+        {
+            ReleaseDC(hWnd, windowHdc);
+        }
+    }
+
+    private static bool TryPrintWindow(IntPtr hWnd, IntPtr destHdc)
+    {
+        return PrintWindow(hWnd, destHdc, PW_RENDERFULLCONTENT);
+    }
+
+    private static bool TryBitBltFromDesktop(RECT rect, IntPtr destHdc, int width, int height)
+    {
+        IntPtr desktopHdc = GetDC(IntPtr.Zero);
+        if (desktopHdc == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            return BitBlt(destHdc, 0, 0, width, height, desktopHdc, rect.Left, rect.Top, SRCCOPY | CAPTUREBLT);
+        }
+        finally
+        {
+            ReleaseDC(IntPtr.Zero, desktopHdc);
+        }
+    }
+
     public static void DrawRectangle(Mat image, Mat template, Point topLeft)
     {
-        // 获取模板的宽度和高度
         int width = template.Cols;
         int height = template.Rows;
-
-        // 定义矩形框的颜色和厚度
-        MCvScalar color = new MCvScalar(0, 255, 0); // 绿色
+        MCvScalar color = new(0, 255, 0);
         int thickness = 2;
-
-        // 计算矩形框的右下角位置
-        Point bottomRight = new Point(topLeft.X + width, topLeft.Y + height);
-
-        // 在图像上绘制矩形框
+        Point bottomRight = new(topLeft.X + width, topLeft.Y + height);
         CvInvoke.Rectangle(image, new Rectangle(topLeft, template.Size), color, thickness);
     }
 
     public static Mat BitmapToEmguMat(Bitmap bitmap)
     {
-        // 将 Bitmap 编码为 PNG 格式的字节数组
+        using var scope = PerformanceScope.Track("BitmapToMat", 5);
         byte[] buffer;
-        using (MemoryStream ms = new MemoryStream())
+        using (MemoryStream ms = new())
         {
             bitmap.Save(ms, ImageFormat.Png);
             buffer = ms.ToArray();
         }
 
-        // 使用 Imdecode 将字节数组解码为 Mat
-        Mat dst = new Mat();
+        Mat dst = new();
         CvInvoke.Imdecode(buffer, ImreadModes.AnyColor, dst);
-
         return dst;
     }
 
-    public static MatchResult Match(Mat src, String iconFileName)
+    public static MatchResult Match(Mat src, string iconFileName)
     {
-        return Match(src, CvInvoke.Imread(iconFileName, ImreadModes.AnyColor));
+        Mat icon = CvInvoke.Imread(iconFileName, ImreadModes.AnyColor);
+        if (icon.IsEmpty)
+        {
+            throw new FileNotFoundException($"匹配图标读取失败: {iconFileName}");
+        }
+
+        return Match(src, icon);
     }
 
     public static MatchResult Match(Mat src, Mat dst)
     {
-        MatchResult matchResult = new MatchResult
+        using var scope = PerformanceScope.Track("TemplateMatch", 10);
+
+        if (dst.IsEmpty)
+        {
+            throw new ArgumentException("模板图像为空", nameof(dst));
+        }
+
+        MatchResult matchResult = new()
         {
             Src = src,
             Dst = dst
         };
 
-        // 转换为灰度图像（可选，提高匹配速度）
-        Mat screenshotGray = new Mat();
-        Mat iconGray = new Mat();
+        using Mat screenshotGray = new();
+        using Mat iconGray = new();
         CvInvoke.CvtColor(src, screenshotGray, ColorConversion.Bgr2Gray);
         CvInvoke.CvtColor(dst, iconGray, ColorConversion.Bgr2Gray);
 
-        // 使用模板匹配
-        Mat result = new Mat();
+        using Mat result = new();
         CvInvoke.MatchTemplate(screenshotGray, iconGray, result, TemplateMatchingType.CcoeffNormed);
 
-        // 找到最佳匹配位置
         double minVal = 0, maxVal = 0;
         Point minLoc = new(), maxLoc = new();
         CvInvoke.MinMaxLoc(result, ref minVal, ref maxVal, ref minLoc, ref maxLoc);
@@ -180,7 +267,6 @@ public class CaptureUtil
         matchResult.MaxVal = maxVal;
         matchResult.MinLoc = minLoc;
         matchResult.MaxLoc = maxLoc;
-        matchResult.ResultMat = result;
         matchResult.ResultValue = maxVal;
 
         return matchResult;
@@ -190,7 +276,13 @@ public class CaptureUtil
     {
         int x = rect.Left + result.MaxLoc.X + 10;
         int y = rect.Top + result.MaxLoc.Y + 10;
-
         return new Point(x, y);
+    }
+
+    public static void ResetDiagnostics()
+    {
+        _notifiedWindowCaptureFailure = false;
+        _notifiedPrintWindowFailure = false;
+        _notifiedDesktopCaptureFailure = false;
     }
 }

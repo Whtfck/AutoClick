@@ -11,7 +11,7 @@ public class DelayAction(MatchResult result, JObject action) : IAction
     public void DoAction()
     {
         var delay = SafeConvertUtil.ToInt(Action["Delay"]);
-        Console.WriteLine($"Delay action: {delay} at: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
+        LogUtil.Info($"Delay action: {delay} ms");
         Thread.Sleep(delay);
     }
 }
