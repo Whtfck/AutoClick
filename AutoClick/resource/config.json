@@ -4,6 +4,8 @@
       "ProcessName": "ZenlessZoneZero",
       "ResourcePath": "zzz",
       "MatchValue": 0.85,
+      "PollIntervalMs": 120,
+      "NoMatchDelayMs": 60,
       "Tasks": [
         {
           "IconGroups": [

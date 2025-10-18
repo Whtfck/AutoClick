@@ -29,6 +29,7 @@ public class ActionUtil
                 return new DelayAction(result, action);
         }
 
+        LogUtil.Warning($"Unsupported action type: {type}");
         return new EmptyAction(result, action);
     }
 }

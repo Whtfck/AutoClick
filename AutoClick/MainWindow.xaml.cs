@@ -1,9 +1,13 @@
-﻿using System.Diagnostics;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
+
 using AutoClick.ui;
 using AutoClick.utils;
 using Emgu.CV;
@@ -20,7 +24,6 @@ namespace AutoClick;
 /// </summary>
 public partial class MainWindow : Window
 {
-    // 定义 Windows API 函数
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
@@ -30,40 +33,55 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
-    private ProcessInfo? _processInfo = null;
-
-    private bool _isRunning;
-
-    private JObject? _config;
-
+    private ProcessInfo? _processInfo;
+    private volatile bool _isRunning;
     private double _matchValue;
+    private Thread? _workerThread;
+    private PerformanceMonitor? _targetPerformanceMonitor;
+    private PerformanceMonitor? _appPerformanceMonitor;
 
     public MainWindow()
     {
         InitializeComponent();
-
         ConfigTextBox.Text = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory + "./resource/config.json");
+        InitializeAppPerformanceMonitor();
+        LogUtil.Info("AutoClick UI initialized");
     }
 
-    public bool IsRunning
+    public bool IsRunning => _isRunning;
+
+    private void InitializeAppPerformanceMonitor()
     {
-        get => _isRunning;
-        set
+        try
         {
-            if (_isRunning != value)
-            {
-                _isRunning = value;
-                // 其他线程更新此控件
-                Dispatcher.Invoke(() => { IsRunningCheckBox.IsChecked = _isRunning; });
-                Console.WriteLine($"switch isRunning to:{_isRunning}");
-            }
+            _appPerformanceMonitor = PerformanceMonitor.Start(Process.GetCurrentProcess(), "AutoClick");
+        }
+        catch (Exception ex)
+        {
+            LogUtil.Warning($"启动 AutoClick 性能监控失败: {ex.Message}");
         }
     }
 
+    private void SetRunningState(bool value)
+    {
+        if (_isRunning == value)
+        {
+            return;
+        }
+
+        _isRunning = value;
+        Dispatcher.Invoke(() => { IsRunningCheckBox.IsChecked = _isRunning; });
+        LogUtil.Info($"switch isRunning to:{_isRunning}");
+
+        if (!_isRunning)
+        {
+            StopPerformanceMonitoring();
+        }
+    }
 
     private void PidBtn_OnClick(object sender, RoutedEventArgs e)
     {
-        ProcessList processList = new ProcessList();
+        ProcessList processList = new();
         processList.ShowDialog();
 
         if (processList.SelectedProcess != null)
@@ -72,12 +90,13 @@ public partial class MainWindow : Window
             var pid = processList.SelectedProcess.Pid;
             var pName = processList.SelectedProcess.ProcessName;
             PidTextBox.Text = $"{pName}({pid})";
+            LogUtil.Info($"Selected process -> {pName} ({pid})");
         }
     }
 
     private void ConfigBtn_OnClick(object sender, RoutedEventArgs e)
     {
-        OpenFileDialog openFileDialog = new OpenFileDialog
+        OpenFileDialog openFileDialog = new()
         {
             Title = "Select a JSON file",
             InitialDirectory = AppDomain.CurrentDomain.BaseDirectory,
@@ -91,23 +110,26 @@ public partial class MainWindow : Window
         if (result == true)
         {
             var fileName = openFileDialog.FileName;
-            CheckConfig(fileName);
-            ConfigTextBox.Text = fileName;
+            if (CheckConfig(fileName) != null)
+            {
+                ConfigTextBox.Text = fileName;
+            }
         }
     }
 
     private void StartBtn_OnClick(object sender, RoutedEventArgs e)
     {
+        if (IsRunning)
+        {
+            MessageBox.Show("Config is already running");
+            return;
+        }
+
         string filepath = ConfigTextBox.Text;
         JObject? config = CheckConfig(filepath);
         if (config != null)
         {
-            IsRunning = true;
-            // 启动监听
-            // WatchWindow();
-            // 启动自动点击任务
             config["curDir"] = Path.GetDirectoryName(filepath);
-            _config = config;
             _matchValue = ToDouble(config["MatchValue"]);
             StartTask(config);
         }
@@ -115,10 +137,43 @@ public partial class MainWindow : Window
 
     private void StopBtn_OnClick(object sender, RoutedEventArgs e)
     {
-        IsRunning = false;
+        StopAutomation();
     }
 
-    private JObject? CheckConfig(String filepath)
+    private void StopAutomation()
+    {
+        if (!IsRunning)
+        {
+            return;
+        }
+
+        SetRunningState(false);
+        Thread? worker = _workerThread;
+        if (worker != null && worker.IsAlive)
+        {
+            if (!worker.Join(TimeSpan.FromSeconds(2)))
+            {
+                try
+                {
+                    worker.Interrupt();
+                }
+                catch (Exception ex)
+                {
+                    LogUtil.Warning($"中断工作线程失败: {ex.Message}");
+                }
+
+                if (!worker.Join(TimeSpan.FromSeconds(1)) && worker.IsAlive)
+                {
+                    LogUtil.Warning("工作线程在中断后仍未退出，将在后台继续停止过程。");
+                }
+            }
+        }
+
+        _workerThread = null;
+        LogUtil.Info("Automation stopped by user");
+    }
+
+    private JObject? CheckConfig(string filepath)
     {
         if (IsRunning)
         {
@@ -150,12 +205,12 @@ public partial class MainWindow : Window
             JObject jsonObj = JObject.Parse(fileContent);
             JArray processList = ToJArray(jsonObj["ProcessList"]);
 
-
             foreach (var ps in processList)
             {
                 JObject taskObj = ToJObject(ps);
                 if (taskObj["ProcessName"] != null && ObjToString(taskObj["ProcessName"]) == _processInfo.ProcessName)
                 {
+                    LogUtil.Info($"Loaded config for process {_processInfo.ProcessName}");
                     return taskObj;
                 }
             }
@@ -165,6 +220,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            LogUtil.Error("读取配置失败", ex);
             MessageBox.Show($"Error reading the file: {ex.Message}", "Error", MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -172,161 +228,243 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private void WatchWindow()
+    private void StartTask(JObject config)
     {
-        Thread monitoringThread = new Thread(_ =>
+        _workerThread = new Thread(() =>
         {
-            while (IsRunning)
-            {
-                try
-                {
-                    // 获取当前活动窗口的句柄
-                    IntPtr hwnd = GetForegroundWindow();
-                    if (hwnd != IntPtr.Zero)
-                    {
-                        // 获取窗口所属的进程 ID
-                        GetWindowThreadProcessId(hwnd, out var processId);
-
-                        // 根据进程 ID 获取进程信息
-                        Process process = Process.GetProcessById((int)processId);
-
-                        // 判断当前活动窗口是否属于目标应用程序
-                        IsRunning = process.ProcessName.Equals(_processInfo.ProcessName,
-                            StringComparison.OrdinalIgnoreCase);
-
-                        // Console.WriteLine($"Front is: {process.ProcessName}, isPause: {isPause}");
-                    }
-
-                    // 暂停一段时间，避免频繁检查
-                    Thread.Sleep(200);
-                }
-                catch (Exception e)
-                {
-                    Console.Error.WriteLine(e);
-                    IsRunning = false;
-                }
-            }
-        });
-        monitoringThread.IsBackground = true; // 设置为后台线程
-        monitoringThread.Start();
-    }
-
-    private void StartTask(JObject? config)
-    {
-        if (config == null)
-        {
-            throw new Exception("Config is null");
-        }
-
-        Thread t = new Thread(_ =>
-        {
+            Dictionary<string, Mat> matCache = new(StringComparer.OrdinalIgnoreCase);
             try
             {
-                Console.WriteLine($"Starting task:{_processInfo.ProcessName}");
+                string? processName = _processInfo?.ProcessName;
+                if (string.IsNullOrWhiteSpace(processName))
+                {
+                    throw new InvalidOperationException("未选择有效的进程");
+                }
 
                 string curDir = ObjToString(config["curDir"]);
                 string resDir = ObjToString(config["ResourcePath"]);
                 JArray tasks = ToJArray(config["Tasks"]);
 
-                Dictionary<String, Mat> matMap = new Dictionary<String, Mat>();
+                int pollIntervalMs = NormalizeInterval(ToInt(config["PollIntervalMs"]), 80);
+                int noMatchDelayMs = NormalizeInterval(ToInt(config["NoMatchDelayMs"]), pollIntervalMs / 2, 0);
 
-                IntPtr handle = CaptureUtil.GetWindowHandle(_processInfo.ProcessName);
+                LogUtil.Info($"Starting automation for {processName}, pollInterval={pollIntervalMs}ms, noMatchDelay={noMatchDelayMs}ms");
+
+                CaptureUtil.ResetDiagnostics();
+                IntPtr handle = CaptureUtil.GetWindowHandle(processName);
                 CaptureUtil.ShowWindow(handle, CaptureUtil.SW_RESTORE);
                 CaptureUtil.SetForegroundWindow(handle);
+                Thread.Sleep(200);
+
+                StartPerformanceMonitoring();
+                SetRunningState(true);
+
+                Stopwatch loopStopwatch = Stopwatch.StartNew();
+
                 while (IsRunning)
                 {
-                    foreach (var t in tasks)
+                    bool hasMatchedAction = false;
+
+                    foreach (var taskToken in tasks)
                     {
                         if (!IsRunning)
                         {
-                            Console.WriteLine("stopping task");
                             break;
                         }
 
-                        JObject task = ToJObject(t);
+                        JObject task = ToJObject(taskToken);
                         JArray iconGroups = ToJArray(task["IconGroups"]);
-
                         int targetIndex = ToInt(task["TargetIndex"]);
                         JArray actions = ToJArray(task["Actions"]);
+                        int taskDelay = Math.Max(0, ToInt(task["Delay"]));
 
-                        // 不同组集合
                         foreach (var igs in iconGroups)
                         {
                             if (!IsRunning)
                             {
-                                Console.WriteLine("stopping task");
                                 break;
                             }
 
-                            Bitmap bitmap = CaptureUtil.CaptureWindow(handle);
+                            using Bitmap bitmap = CaptureUtil.CaptureWindow(handle);
                             CaptureUtil.GetWindowRect(handle, out RECT rect);
-                            Mat src = CaptureUtil.BitmapToEmguMat(bitmap);
+                            using Mat src = CaptureUtil.BitmapToEmguMat(bitmap);
 
-                            // 组内图片集合
                             JArray iconGroup = ToJArray(igs);
-                            // 组内是否全部匹配
-                            bool allMatched = false;
-                            Dictionary<int, MatchResult> results = new Dictionary<int, MatchResult>();
+                            bool allMatched = true;
+                            Dictionary<int, MatchResult> results = new();
+
                             for (int i = 0; i < iconGroup.Count; i++)
                             {
                                 if (!IsRunning)
                                 {
-                                    Console.WriteLine("stopping task");
+                                    allMatched = false;
                                     break;
                                 }
 
-                                string icon = $"{curDir}/{resDir}/{ObjToString(iconGroup[i])}";
+                                string iconPath = Path.Combine(curDir, resDir, ObjToString(iconGroup[i]));
 
-                                var matchResult = matMap.TryGetValue(icon, out var iconMat)
+                                MatchResult matchResult = matCache.TryGetValue(iconPath, out Mat? iconMat)
                                     ? CaptureUtil.Match(src, iconMat)
-                                    : CaptureUtil.Match(src, icon);
+                                    : CaptureUtil.Match(src, iconPath);
 
-                                matMap[icon] = matchResult.Dst;
-
-                                results.Add(i, matchResult);
-                                if (IsMatched(matchResult))
+                                if (!matCache.ContainsKey(iconPath))
                                 {
-                                    Console.WriteLine($"Matched: {icon}, maxVal: {matchResult.MaxVal}");
-                                    if (i == iconGroup.Count - 1)
-                                    {
-                                        allMatched = true;
-                                    }
+                                    matCache[iconPath] = matchResult.Dst;
                                 }
-                                else
+
+                                results[i] = matchResult;
+                                if (!IsMatched(matchResult))
                                 {
+                                    allMatched = false;
                                     break;
                                 }
                             }
 
                             if (allMatched)
                             {
-                                MatchResult targetResult = results[targetIndex];
-
-                                ActionUtil.DoActions(rect, actions, targetResult);
+                                hasMatchedAction = true;
+                                if (results.TryGetValue(targetIndex, out MatchResult targetResult))
+                                {
+                                    LogUtil.Info($"Matched icon group -> executing {actions.Count} action(s)");
+                                    ActionUtil.DoActions(rect, actions, targetResult);
+                                }
+                                else
+                                {
+                                    LogUtil.Warning($"匹配结果中找不到目标索引 {targetIndex}");
+                                }
                             }
-                            else
+                            else if (noMatchDelayMs > 0)
                             {
-                                Console.WriteLine($"{iconGroup} not match at: {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}");
+                                Thread.Sleep(noMatchDelayMs);
                             }
                         }
 
-                        // 任务延迟
-                        Thread.Sleep(ToInt(task["Delay"]));
+                        if (taskDelay > 0)
+                        {
+                            Thread.Sleep(taskDelay);
+                        }
                     }
+
+                    if (!IsRunning)
+                    {
+                        break;
+                    }
+
+                    if (!hasMatchedAction)
+                    {
+                        int elapsed = (int)loopStopwatch.ElapsedMilliseconds;
+                        int sleepMs = pollIntervalMs - elapsed;
+                        if (sleepMs > 0)
+                        {
+                            Thread.Sleep(sleepMs);
+                        }
+                    }
+
+                    loopStopwatch.Restart();
                 }
+            }
+            catch (ThreadInterruptedException)
+            {
+                LogUtil.Warning("工作线程被中断");
             }
             catch (Exception e)
             {
-                IsRunning = false;
-                Console.Error.WriteLine(e);
+                LogUtil.Error("自动化任务发生异常", e);
+                Dispatcher.Invoke(() =>
+                {
+                    MessageBox.Show($"Automation task error: {e.Message}", "Error", MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                });
             }
-        });
+            finally
+            {
+                foreach (var mat in matCache.Values)
+                {
+                    mat.Dispose();
+                }
 
-        t.IsBackground = true;
-        t.Start();
-        IsRunning = true;
+                matCache.Clear();
+                if (ReferenceEquals(_workerThread, Thread.CurrentThread))
+                {
+                    _workerThread = null;
+                }
+                SetRunningState(false);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "AutoClick-Worker"
+        };
+
+        _workerThread.Start();
     }
 
+    private static int NormalizeInterval(int value, int fallback, int minValue = 16)
+    {
+        if (value <= 0)
+        {
+            value = fallback;
+        }
+
+        return Math.Clamp(value, minValue, 5000);
+    }
+
+    private void StartPerformanceMonitoring()
+    {
+        StopPerformanceMonitoring();
+
+        try
+        {
+            if (_processInfo != null)
+            {
+                var process = Process.GetProcessById(_processInfo.Pid);
+                _targetPerformanceMonitor = PerformanceMonitor.Start(process, _processInfo.ProcessName);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogUtil.Warning($"启动 {_processInfo?.ProcessName} 性能监控失败: {ex.Message}");
+        }
+    }
+
+    private void StopPerformanceMonitoring()
+    {
+        _targetPerformanceMonitor?.Dispose();
+        _targetPerformanceMonitor = null;
+    }
+
+    private void WatchWindow()
+    {
+        Thread monitoringThread = new(_ =>
+        {
+            while (IsRunning)
+            {
+                try
+                {
+                    IntPtr hwnd = GetForegroundWindow();
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        GetWindowThreadProcessId(hwnd, out var processId);
+                        Process process = Process.GetProcessById((int)processId);
+                        bool shouldRun = process.ProcessName.Equals(_processInfo?.ProcessName,
+                            StringComparison.OrdinalIgnoreCase);
+                        SetRunningState(shouldRun);
+                    }
+
+                    Thread.Sleep(200);
+                }
+                catch (Exception e)
+                {
+                    LogUtil.Error("窗口监控异常", e);
+                    SetRunningState(false);
+                }
+            }
+        })
+        {
+            IsBackground = true
+        };
+        monitoringThread.Start();
+    }
 
     private bool IsMatched(MatchResult matchResult)
     {
@@ -336,5 +474,12 @@ public partial class MainWindow : Window
         }
 
         return false;
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        StopAutomation();
+        _appPerformanceMonitor?.Dispose();
+        base.OnClosed(e);
     }
 }
