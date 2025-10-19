@@ -1,0 +1,138 @@
+{
+  "ProcessList": [
+    {
+      "ProcessName": "YourGameProcess",
+      "ResourcePath": "resources",
+      "MatchValue": 0.85,
+      "Tasks": [
+        {
+          "IconGroups": [
+            [
+              "button1.png"
+            ]
+          ],
+          "TargetIndex": 0,
+          "Actions": [
+            {
+              "Type": "move",
+              "Offset": {
+                "X": 10,
+                "Y": 10
+              }
+            },
+            {
+              "Type": "delay",
+              "Delay": 50
+            },
+            {
+              "Type": "click",
+              "Offset": {
+                "X": 10,
+                "Y": 10
+              },
+              "Button": "left"
+            },
+            {
+              "Type": "delay",
+              "Delay": 200
+            }
+          ],
+          "Delay": 100
+        },
+        {
+          "IconGroups": [
+            [
+              "confirm.png"
+            ]
+          ],
+          "TargetIndex": 0,
+          "Actions": [
+            {
+              "Type": "click",
+              "Offset": {
+                "X": 10,
+                "Y": 10
+              }
+            },
+            {
+              "Type": "delay",
+              "Delay": 500
+            }
+          ],
+          "Delay": 0
+        },
+        {
+          "IconGroups": [
+            [
+              "icon1.png",
+              "icon2.png",
+              "icon3.png"
+            ]
+          ],
+          "TargetIndex": 1,
+          "Actions": [
+            {
+              "Type": "move",
+              "Offset": {
+                "X": 15,
+                "Y": 15
+              }
+            },
+            {
+              "Type": "delay",
+              "Delay": 100
+            },
+            {
+              "Type": "click",
+              "Offset": {
+                "X": 15,
+                "Y": 15
+              }
+            }
+          ],
+          "Delay": 500
+        }
+      ]
+    },
+    {
+      "ProcessName": "ZenlessZoneZero",
+      "ResourcePath": "zzz",
+      "MatchValue": 0.85,
+      "Tasks": [
+        {
+          "IconGroups": [
+            [
+              "menu.png"
+            ]
+          ],
+          "TargetIndex": 0,
+          "Actions": [
+            {
+              "Type": "move",
+              "Offset": {
+                "X": 10,
+                "Y": 10
+              }
+            },
+            {
+              "Type": "delay",
+              "Delay": 15
+            },
+            {
+              "Type": "click",
+              "Offset": {
+                "X": 10,
+                "Y": 10
+              }
+            },
+            {
+              "Type": "delay",
+              "Delay": 200
+            }
+          ],
+          "Delay": 0
+        }
+      ]
+    }
+  ]
+}
